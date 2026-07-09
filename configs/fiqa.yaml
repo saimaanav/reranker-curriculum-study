@@ -1,0 +1,51 @@
+run_name: fiqa
+seed: 0
+seeds: [0, 1, 2, 3, 4]
+
+dataset:
+  name: fiqa
+  beir_data_dir: data/raw/fiqa
+  split: test
+  candidate_pool_size: 20   # k=20 candidates per query
+  max_queries: 50
+
+judge:
+  provider: ollama
+  models:
+    - id: llama3
+      name: judge_a
+  prompt_version: v1
+  cache_dir: data/cache
+  max_retries: 3
+  backoff_base_seconds: 1.0
+  requests_per_minute: 999
+  max_workers: 4
+  repeat_calls_for_flip_rate: 0
+
+rating_fit:
+  method: bradley_terry   # or "thurstone"
+  cross_query_bias: true
+  optimizer: newton       # "newton" or "gradient_descent"
+  max_iters: 200
+  tol: 1.0e-8
+  l2_reg: 1.0e-4          # small ridge for numerical stability of the Hessian
+
+comparisons:
+  initial_random_round_per_query: 10   # bootstrap round to seed margin estimates
+
+wandb:
+  enabled: false
+  mode: offline
+  project: zelo-curriculum-study
+
+output_dir: results/phase1/fiqa
+
+phase2:
+  comparison_budget: 300
+  checkpoints_fractions: [0.25, 0.5, 0.75, 1.0]
+  eval_query_fraction: 0.3
+  target_ndcg: 0.8
+  target_ece: 0.1
+  base_model: cross-encoder/ms-marco-MiniLM-L-6-v2
+  arms: [random, difficulty_curriculum, anti_curriculum, compositional_curriculum]
+  output_dir: results/phase2/fiqa

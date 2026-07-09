@@ -1,0 +1,4 @@
+  0%|          | 0/57638 [00:00<?, ?it/s]100%|██████████| 57638/57638 [00:00<00:00, 612897.51it/s]
+Building eval calibration pairs (194 eval queries) ...
+/opt/homebrew/Cellar/python@3.11/3.11.15/Frameworks/Python.framework/Versions/3.11/lib/python3.11/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 1 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '

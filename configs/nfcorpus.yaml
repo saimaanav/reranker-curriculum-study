@@ -1,0 +1,51 @@
+run_name: nfcorpus
+seed: 0
+seeds: [0]
+
+dataset:
+  name: nfcorpus
+  beir_data_dir: data/raw/nfcorpus
+  split: test
+  candidate_pool_size: 20
+  max_queries: 20
+
+judge:
+  provider: ollama
+  models:
+    - id: llama3
+      name: judge_a
+  prompt_version: v1
+  cache_dir: data/cache
+  max_retries: 3
+  backoff_base_seconds: 1.0
+  requests_per_minute: 999
+  max_workers: 4
+  repeat_calls_for_flip_rate: 0
+
+rating_fit:
+  method: bradley_terry
+  cross_query_bias: true
+  optimizer: newton
+  max_iters: 200
+  tol: 1.0e-8
+  l2_reg: 1.0e-4
+
+comparisons:
+  initial_random_round_per_query: 10
+
+wandb:
+  enabled: false
+  mode: offline
+  project: zelo-curriculum-study
+
+output_dir: results/phase1/nfcorpus
+
+phase2:
+  comparison_budget: 100
+  checkpoints_fractions: [0.25, 0.5, 0.75, 1.0]
+  eval_query_fraction: 0.3
+  target_ndcg: 0.6
+  target_ece: 0.15
+  base_model: cross-encoder/ms-marco-MiniLM-L-6-v2
+  arms: [random, difficulty_curriculum, anti_curriculum, compositional_curriculum]
+  output_dir: results/phase2/nfcorpus

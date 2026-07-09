@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+data/raw/
+data/cache/
+results/**/*.json
+results/**/*.png
+.DS_Store
+*.egg-info/
+wandb/

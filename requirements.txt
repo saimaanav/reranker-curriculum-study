@@ -1,0 +1,16 @@
+torch==2.4.1
+numpy==1.26.4
+scipy==1.13.1
+sentence-transformers==3.1.1
+transformers==4.44.2
+beir==2.0.0
+datasets==2.21.0
+peft==0.13.0
+choix==0.3.5
+rank-bm25==0.2.2
+requests==2.32.3
+PyYAML==6.0.2
+wandb==0.18.1
+pytest==8.3.3
+tqdm==4.66.5
+matplotlib==3.9.2
