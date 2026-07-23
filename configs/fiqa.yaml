@@ -41,11 +41,11 @@ wandb:
 output_dir: results/phase1/fiqa
 
 phase2:
-  comparison_budget: 300
+  comparison_budget: 600
   checkpoints_fractions: [0.25, 0.5, 0.75, 1.0]
   eval_query_fraction: 0.3
   target_ndcg: 0.8
   target_ece: 0.1
   base_model: cross-encoder/ms-marco-MiniLM-L-6-v2
-  arms: [random, difficulty_curriculum, anti_curriculum, compositional_curriculum]
+  arms: [random_cycles, compositional, anti_compositional]
   output_dir: results/phase2/fiqa

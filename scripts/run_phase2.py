@@ -57,49 +57,61 @@ class BTRatingReranker:
         return np.array([self._scores.get(p, 0.0) for p in pairs], dtype=np.float64)
 
 
-def _tf_cosine_sim(text_a: str, text_b: str) -> float:
-    """Cheap bag-of-words cosine similarity, used as a "semantic" proxy signal for the
-    compositional curriculum -- avoids depending on a neural embedding model (extra
-    network download) to keep --smoke fully offline under the $0 budget constraint."""
-    tokens_a = text_a.lower().split()
-    tokens_b = text_b.lower().split()
-    vocab = set(tokens_a) | set(tokens_b)
-    if not vocab:
-        return 0.0
-    vec_a = np.array([tokens_a.count(t) for t in vocab], dtype=np.float64)
-    vec_b = np.array([tokens_b.count(t) for t in vocab], dtype=np.float64)
-    denom = np.linalg.norm(vec_a) * np.linalg.norm(vec_b)
-    return float(np.dot(vec_a, vec_b) / denom) if denom > 0 else 0.0
+def _embed_docs(pools: list) -> dict[str, np.ndarray]:
+    """Embeds every unique doc text across all pools once with a real sentence embedding
+    model, returning doc_id -> unit-normalized embedding vector."""
+    from sentence_transformers import SentenceTransformer
 
+    model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+    doc_id_to_text: dict[str, str] = {}
+    for pool in pools:
+        for doc_id, text in zip(pool.doc_ids, pool.doc_texts):
+            doc_id_to_text[doc_id] = text
 
-def _jaccard(a: str, b: str) -> float:
-    ta, tb = set(a.lower().split()), set(b.lower().split())
-    if not (ta | tb):
-        return 0.0
-    return len(ta & tb) / len(ta | tb)
+    doc_ids = list(doc_id_to_text.keys())
+    embeddings = model.encode(
+        [doc_id_to_text[d] for d in doc_ids], normalize_embeddings=True, show_progress_bar=False,
+    )
+    return {doc_id: emb for doc_id, emb in zip(doc_ids, embeddings)}
 
 
 def build_pair_universe(pools: list) -> list[PairCandidate]:
-    """All C(n,2) candidate pairs per query pool, annotated with cheap pre-fit difficulty
-    and sub-skill-categorization features."""
-    pairs = []
+    """All C(n,2) candidate pairs per query pool, annotated with pre-fit difficulty
+    features. bootstrap_margin and semantic_sim are min-max normalized to [0,1] across the
+    full pair universe so the 0.7/0.3 difficulty weights are comparable."""
+    doc_embeddings = _embed_docs(pools)
+
+    raw_margins = []
+    raw_sims = []
+    pair_specs = []
     for pool in pools:
         n = len(pool.doc_ids)
         for i, j in itertools.combinations(range(n), 2):
             doc_a_id, doc_b_id = pool.doc_ids[i], pool.doc_ids[j]
             bm25_a = pool.bm25_scores.get(doc_a_id, 0.0)
             bm25_b = pool.bm25_scores.get(doc_b_id, 0.0)
-            lex_overlap = (
-                _jaccard(pool.query_text, pool.doc_texts[i]) + _jaccard(pool.query_text, pool.doc_texts[j])
-            ) / 2.0
-            semantic_sim = _tf_cosine_sim(pool.doc_texts[i], pool.doc_texts[j])
-            pairs.append(
-                PairCandidate(
-                    query_id=pool.query_id, doc_a_id=doc_a_id, doc_b_id=doc_b_id,
-                    bootstrap_margin=abs(bm25_a - bm25_b),
-                    lexical_overlap=lex_overlap, semantic_sim=semantic_sim,
-                )
-            )
+            margin = abs(bm25_a - bm25_b)
+            sim = float(np.dot(doc_embeddings[doc_a_id], doc_embeddings[doc_b_id]))
+            raw_margins.append(margin)
+            raw_sims.append(sim)
+            pair_specs.append((pool.query_id, doc_a_id, doc_b_id))
+
+    def _normalize(values: list[float]) -> list[float]:
+        lo, hi = min(values), max(values)
+        if hi - lo < 1e-12:
+            return [0.0 for _ in values]
+        return [(v - lo) / (hi - lo) for v in values]
+
+    norm_margins = _normalize(raw_margins)
+    norm_sims = _normalize(raw_sims)
+
+    pairs = [
+        PairCandidate(
+            query_id=qid, doc_a_id=doc_a_id, doc_b_id=doc_b_id,
+            bootstrap_margin=norm_margins[idx], semantic_sim=norm_sims[idx],
+        )
+        for idx, (qid, doc_a_id, doc_b_id) in enumerate(pair_specs)
+    ]
     return pairs
 
 

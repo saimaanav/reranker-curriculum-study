@@ -1,10 +1,10 @@
-run_name: scifact
+run_name: fiqa_fast
 seed: 0
-seeds: [0, 1, 2, 3, 4]
+seeds: [0, 1]
 
 dataset:
-  name: scifact
-  beir_data_dir: data/raw/scifact
+  name: fiqa
+  beir_data_dir: data/raw/fiqa
   split: test
   candidate_pool_size: 20   # k=20 candidates per query
   max_queries: 50
@@ -23,22 +23,22 @@ judge:
   repeat_calls_for_flip_rate: 0
 
 rating_fit:
-  method: bradley_terry
+  method: bradley_terry   # or "thurstone"
   cross_query_bias: true
-  optimizer: newton
+  optimizer: newton       # "newton" or "gradient_descent"
   max_iters: 200
   tol: 1.0e-8
-  l2_reg: 1.0e-4
+  l2_reg: 1.0e-4          # small ridge for numerical stability of the Hessian
 
 comparisons:
-  initial_random_round_per_query: 10
+  initial_random_round_per_query: 10   # bootstrap round to seed margin estimates
 
 wandb:
   enabled: false
   mode: offline
   project: zelo-curriculum-study
 
-output_dir: results/phase1/scifact
+output_dir: results/phase1/fiqa_fast
 
 phase2:
   comparison_budget: 600
@@ -48,4 +48,4 @@ phase2:
   target_ece: 0.1
   base_model: cross-encoder/ms-marco-MiniLM-L-6-v2
   arms: [random_cycles, compositional, anti_compositional]
-  output_dir: results/phase2/scifact
+  output_dir: results/phase2/fiqa_fast

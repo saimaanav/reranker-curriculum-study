@@ -1,13 +1,21 @@
-"""Comparison scheduling arms for Phase 2: given a universe of candidate pairs and a fixed
-comparison budget, decide which pairs get judged and in what order.
+"""Comparison scheduling arms for Phase 2.
 
-All schedulers are deterministic given `seed` and truncate to exactly `budget` pairs (or
-fewer if the universe is smaller). Difficulty is approximated pre-fit via a bootstrap
-signal (e.g. BM25 score gap) since true Elo margins aren't known before any ratings exist.
+Three arms:
+  - random_cycles: zELO-style coverage-guaranteed scheduling (every doc compared equally)
+  - compositional: weighted difficulty score, easy pairs first
+  - anti_compositional: exact reverse of compositional, hard pairs first
+
+Difficulty score (higher = easier to judge):
+    difficulty = 0.7 * margin + 0.3 * (1 - semantic_sim)
+where:
+    margin       = |BM25_a - BM25_b|, min-max normalized to [0,1] (large gap = easy)
+    semantic_sim = embedding cosine similarity between doc_a and doc_b, normalized to [0,1]
+                   (high similarity = docs are confusingly close = hard, so we invert)
 """
 from __future__ import annotations
 
 import random
+from collections import defaultdict
 from dataclasses import dataclass
 
 
@@ -16,92 +24,143 @@ class PairCandidate:
     query_id: str
     doc_a_id: str
     doc_b_id: str
-    bootstrap_margin: float     # cheap pre-fit difficulty proxy (e.g. |BM25_a - BM25_b|)
-    lexical_overlap: float      # e.g. mean query-doc token overlap for a and b
-    semantic_sim: float         # e.g. embedding cosine similarity between doc a and doc b
+    bootstrap_margin: float   # |BM25_a - BM25_b|, normalized to [0,1]
+    semantic_sim: float       # embedding cosine similarity between doc_a and doc_b, normalized to [0,1]
 
 
-def schedule_random(pairs: list[PairCandidate], budget: int, seed: int) -> list[PairCandidate]:
-    """Baseline: uniform random order, truncated to budget."""
+def _difficulty_score(p: PairCandidate, alpha: float = 0.7, beta: float = 0.3) -> float:
+    """Higher score = easier pair to judge."""
+    return alpha * p.bootstrap_margin + beta * (1.0 - p.semantic_sim)
+
+
+def schedule_random_cycles(pairs: list[PairCandidate], budget: int, seed: int) -> list[PairCandidate]:
+    """zELO-style: build random cycles within each query pool so every doc gets compared
+    roughly equally. Guarantees no doc is left with zero win/loss record."""
     rng = random.Random(seed)
-    shuffled = list(pairs)
-    rng.shuffle(shuffled)
-    return shuffled[:budget]
+
+    # group pairs and collect docs per query
+    by_query: dict[str, list[PairCandidate]] = defaultdict(list)
+    pair_lookup: dict[tuple, PairCandidate] = {}
+    for p in pairs:
+        by_query[p.query_id].append(p)
+        pair_lookup[(p.query_id, p.doc_a_id, p.doc_b_id)] = p
+        pair_lookup[(p.query_id, p.doc_b_id, p.doc_a_id)] = p
+
+    # proportional budget per query
+    total = len(pairs)
+    selected: list[PairCandidate] = []
+    selected_keys: set[tuple] = set()
+
+    query_ids = list(by_query.keys())
+    rng.shuffle(query_ids)
+
+    for qid in query_ids:
+        q_pairs = by_query[qid]
+        # dict.fromkeys (not a set) so doc order is insertion-order, not Python's
+        # per-process randomized string-hash order -- keeps the schedule reproducible
+        # across separate process invocations given the same seed, not just within one run.
+        docs = list(dict.fromkeys(d for p in q_pairs for d in (p.doc_a_id, p.doc_b_id)))
+        n = len(docs)
+        if n < 2:
+            continue
+        q_budget = min(max(n, round(budget * len(q_pairs) / total)), len(q_pairs))
+
+        q_selected: list[PairCandidate] = []
+        q_keys: set[tuple] = set()
+
+        while len(q_selected) < q_budget:
+            perm = docs[:]
+            rng.shuffle(perm)
+            for i in range(len(perm)):
+                a, b = perm[i], perm[(i + 1) % len(perm)]
+                key = (qid, min(a, b), max(a, b))
+                if key not in q_keys and key not in selected_keys:
+                    p = pair_lookup.get((qid, a, b)) or pair_lookup.get((qid, b, a))
+                    if p:
+                        q_selected.append(p)
+                        q_keys.add(key)
+                if len(q_selected) >= q_budget:
+                    break
+            else:
+                continue
+            break
+
+        selected.extend(q_selected)
+        selected_keys.update(q_keys)
+
+    rng.shuffle(selected)
+    return selected[:budget]
 
 
-def schedule_difficulty_curriculum(pairs: list[PairCandidate], budget: int, seed: int) -> list[PairCandidate]:
-    """Large-margin (easy) battles first, near-ties (hard) last -- builds a stable rating
-    skeleton before spending budget on the most informative, hardest pairs."""
+PER_QUERY_FLOOR = 10   # min pairs guaranteed per query before free budget clusters by difficulty
+N_DIFFICULTY_BINS = 10   # quantile buckets; macro order (bin sequence) is deterministic per
+                          # arm direction, but which pairs land at the front of a bin -- and
+                          # therefore which pairs survive a mid-bin budget/floor cutoff -- is
+                          # shuffled per seed. A strict full sort by a continuous difficulty
+                          # score has no real ties to break, so shuffling before sorting was a
+                          # no-op; bucketing gives the seed something real to randomize.
+
+
+def _bucket_by_difficulty(pairs: list[PairCandidate], seed: int, reverse: bool) -> list[PairCandidate]:
+    """Bins pairs into N_DIFFICULTY_BINS quantiles by difficulty score, orders the bins by
+    arm direction (easiest-first for compositional, hardest-first for anti_compositional),
+    and shuffles within each bin using the seed's RNG."""
     rng = random.Random(seed)
-    shuffled = list(pairs)
-    rng.shuffle(shuffled)  # break ties within equal margin deterministically per seed
-    ordered = sorted(shuffled, key=lambda p: p.bootstrap_margin, reverse=True)
-    return ordered[:budget]
+    ascending = sorted(pairs, key=_difficulty_score)  # low score (hard) -> high score (easy)
+    n = len(ascending)
+    bin_size = max(1, n // N_DIFFICULTY_BINS)
+    bins = [ascending[i:i + bin_size] for i in range(0, n, bin_size)]
+    # bins[0] = hardest bin ... bins[-1] = easiest bin
+    bin_order = list(reversed(bins)) if reverse else bins
+
+    ordered: list[PairCandidate] = []
+    for b in bin_order:
+        b_shuffled = b[:]
+        rng.shuffle(b_shuffled)
+        ordered.extend(b_shuffled)
+    return ordered
 
 
-def schedule_anti_curriculum(pairs: list[PairCandidate], budget: int, seed: int) -> list[PairCandidate]:
-    """Ablation: near-ties (hardest) first, large-margin (easiest) last -- the reverse
-    ordering direction, to test whether ordering direction matters or just exposure."""
-    rng = random.Random(seed)
-    shuffled = list(pairs)
-    rng.shuffle(shuffled)
-    ordered = sorted(shuffled, key=lambda p: p.bootstrap_margin)
-    return ordered[:budget]
+def _difficulty_scheduled(pairs: list[PairCandidate], budget: int, seed: int, reverse: bool) -> list[PairCandidate]:
+    """Guarantees each query at least PER_QUERY_FLOOR pairs (its own best-by-difficulty
+    pairs, in the arm's direction), then fills the remaining budget by taking leftover
+    pairs in bucketed-difficulty order -- letting hard/easy pairs cluster in whichever
+    queries have the most of them."""
+    ordered = _bucket_by_difficulty(pairs, seed, reverse)
+
+    by_query: dict[str, list[PairCandidate]] = defaultdict(list)
+    for p in ordered:
+        by_query[p.query_id].append(p)
+
+    selected: list[PairCandidate] = []
+    selected_keys: set[tuple] = set()
+    for qid, q_pairs in by_query.items():
+        floor_pairs = q_pairs[:PER_QUERY_FLOOR]
+        selected.extend(floor_pairs)
+        selected_keys.update((qid, p.doc_a_id, p.doc_b_id) for p in floor_pairs)
+
+    remaining_budget = budget - len(selected)
+    if remaining_budget > 0:
+        leftover = [p for p in ordered if (p.query_id, p.doc_a_id, p.doc_b_id) not in selected_keys]
+        selected.extend(leftover[:remaining_budget])
+
+    return selected[:budget]
 
 
-def _quantile_bins(values: list[float], n_bins: int) -> list[float]:
-    if not values:
-        return [0.0] * (n_bins - 1)
-    sorted_vals = sorted(values)
-    edges = []
-    for i in range(1, n_bins):
-        idx = int(len(sorted_vals) * i / n_bins)
-        idx = min(idx, len(sorted_vals) - 1)
-        edges.append(sorted_vals[idx])
-    return edges
+def schedule_compositional(pairs: list[PairCandidate], budget: int, seed: int) -> list[PairCandidate]:
+    """Easy pairs first (highest difficulty score), hard pairs last.
+    Builds a stable B-T rating skeleton before spending budget on confusing near-ties."""
+    return _difficulty_scheduled(pairs, budget, seed, reverse=True)
 
 
-def _compositional_stage(p: PairCandidate, lex_edges: list[float], margin_edges: list[float]) -> int:
-    """Heuristic 4-stage sub-skill categorization, approximating:
-      stage 0 (lexical):              high lexical overlap, large margin -- easy keyword matches
-      stage 1 (semantic):             low lexical overlap, large-to-mid margin -- paraphrase/semantic
-      stage 2 (instruction-following): mid lexical overlap, mid margin -- nuanced relevance judgments
-      stage 3 (hard-distractor):      high lexical overlap, small margin -- near-tie hard negatives
-    This is a proxy categorization from cheap signals (BM25 lexical overlap, embedding
-    similarity, bootstrap margin); it is not a ground-truth skill taxonomy.
-    """
-    lex_hi = p.lexical_overlap >= lex_edges[-1] if lex_edges else False
-    lex_lo = p.lexical_overlap <= lex_edges[0] if lex_edges else False
-    margin_hi = p.bootstrap_margin >= margin_edges[-1] if margin_edges else False
-    margin_lo = p.bootstrap_margin <= margin_edges[0] if margin_edges else False
-
-    if margin_lo and lex_hi:
-        return 3  # hard-distractor: near-tie + lexically similar (hardest, saved for last)
-    if lex_lo and not margin_lo:
-        return 1  # semantic: low lexical overlap but not a near-tie
-    if lex_hi and margin_hi:
-        return 0  # lexical: clear lexical + clear margin (easiest, goes first)
-    return 2  # instruction-following (residual middle bucket)
-
-
-def schedule_compositional_curriculum(
-    pairs: list[PairCandidate], budget: int, seed: int, n_quantile_bins: int = 3
-) -> list[PairCandidate]:
-    """Sophisticated variant: lexical -> semantic -> instruction-following -> hard-distractor,
-    the compositional sub-skill ordering described in plan.md."""
-    lex_edges = _quantile_bins([p.lexical_overlap for p in pairs], n_quantile_bins)
-    margin_edges = _quantile_bins([p.bootstrap_margin for p in pairs], n_quantile_bins)
-
-    rng = random.Random(seed)
-    shuffled = list(pairs)
-    rng.shuffle(shuffled)
-    ordered = sorted(shuffled, key=lambda p: _compositional_stage(p, lex_edges, margin_edges))
-    return ordered[:budget]
+def schedule_anti_compositional(pairs: list[PairCandidate], budget: int, seed: int) -> list[PairCandidate]:
+    """Exact reverse of compositional: hard pairs first, easy pairs last.
+    True ablation — same scoring function, opposite order."""
+    return _difficulty_scheduled(pairs, budget, seed, reverse=False)
 
 
 SCHEDULERS = {
-    "random": schedule_random,
-    "difficulty_curriculum": schedule_difficulty_curriculum,
-    "anti_curriculum": schedule_anti_curriculum,
-    "compositional_curriculum": schedule_compositional_curriculum,
+    "random_cycles": schedule_random_cycles,
+    "compositional": schedule_compositional,
+    "anti_compositional": schedule_anti_compositional,
 }
