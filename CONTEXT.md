@@ -16,7 +16,7 @@ difficulty = 0.7 * normalize(margin) + 0.3 * (1 - normalize(semantic_sim))
 - `semantic_sim` = sentence embedding cosine similarity — similar docs are confusingly close = hard
 - Coefficients justified by margin sampling literature (margin dominates) + hard negative mining (semantic sim catches confusing pairs)
 
-**Settings**: FiQA, 50 queries, k=20 pool, budget=300 judge calls, 5 seeds (0–4), Ollama Llama3 8B judge
+**Settings**: FiQA, 35 queries, k=20 pool, budget=300 judge calls, 5 seeds (0–4), Ollama Llama3 8B judge
 
 ## Old Results (4-arm design, stale — need re-run)
 | Arm | NDCG@10 | vs. random |
