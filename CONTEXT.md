@@ -1,7 +1,7 @@
 # zelo-curriculum-study — Session Context
 
 ## Project Goal
-Testing whether pairwise comparison scheduling order affects Bradley-Terry reranker quality on FiQA (BEIR benchmark), inspired by ZeroEntropy's zELO method. Presenting at YC Startup School YCML Research Symposium, July 26 2026, Chase Center (~200 people, mingle-style).
+Testing whether pairwise comparison scheduling order affects Bradley-Terry reranker quality on FiQA (BEIR benchmark), inspired by ZeroEntropy's zELO method.  Presenting at YC Startup School YCML Research Symposium, July 26 2026, Chase Center (~200 people, mingle-style).
 
 ## Experiment Design (3 arms)
 - **random_cycles**: zELO-style, random cycles ensure every doc gets compared equally (principled baseline)
